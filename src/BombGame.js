@@ -11,7 +11,7 @@ function BombGame({ level }) {
   const [gameStatus, setGameStatus] = useState("waiting");
   // The value for register A as entered by the player (defaults to 0).
   const [playerValue, setPlayerValue] = useState(level.initialRegisters.A);
-  // Controls whether the simulation is running.
+  // Controls whether the simulation is running automatically.
   const [isRunning, setIsRunning] = useState(false);
   // Tooltip content and its screen position.
   const [tooltipContent, setTooltipContent] = useState(null);
@@ -51,21 +51,13 @@ function BombGame({ level }) {
       )} + ${formatArg(args[1])}`,
     JMP: (args) => `Jump to instruction ${args[0]}`,
     BEQ: (args) =>
-      `If ${formatArg(args[0])} equals ${formatArg(
-        args[1]
-      )}, jump to instruction ${args[2]}`,
+      `If ${formatArg(args[0])} equals ${formatArg(args[1])}, jump to instruction ${args[2]}`,
     BNE: (args) =>
-      `If ${formatArg(args[0])} does not equal ${formatArg(
-        args[1]
-      )}, jump to instruction ${args[2]}`,
+      `If ${formatArg(args[0])} does not equal ${formatArg(args[1])}, jump to instruction ${args[2]}`,
     BGT: (args) =>
-      `If ${formatArg(args[0])} is greater than ${formatArg(
-        args[1]
-      )}, jump to instruction ${args[2]}`,
+      `If ${formatArg(args[0])} is greater than ${formatArg(args[1])}, jump to instruction ${args[2]}`,
     BLT: (args) =>
-      `If ${formatArg(args[0])} is less than ${formatArg(
-        args[1]
-      )}, jump to instruction ${args[2]}`,
+      `If ${formatArg(args[0])} is less than ${formatArg(args[1])}, jump to instruction ${args[2]}`,
     TTRAVEL: () => `Set every register to its state at time T`,
     DEFUSE: () => `Defuse the bomb and win the game!`,
     EXPLODE: () => `Explode the bomb and lose the game!`,
@@ -173,7 +165,7 @@ function BombGame({ level }) {
     setPC(newPC);
   };
 
-  // Timer to step through the program if running.
+  // Automatic stepping (only if isRunning is true and game is still running).
   useEffect(() => {
     if (!isRunning || gameStatus !== "running") return;
     const timer = setTimeout(() => {
@@ -182,8 +174,17 @@ function BombGame({ level }) {
     return () => clearTimeout(timer);
   }, [isRunning, gameStatus, registers, pc]);
 
+  // Manual stepping: stops any automatic execution and executes one step.
+  const manualStep = () => {
+    setIsRunning(false);
+    if (gameStatus === "waiting") {
+      setGameStatus("running");
+    }
+    step();
+  };
+
   // Reset the level state using the player's specified value for register A.
-  // (No external check is made—any errors will be caught by the assembly instructions.)
+  // (All win/lose conditions are now enforced in the assembly code.)
   const resetGame = () => {
     const initialA = parseInt(playerValue, 10);
     const initRegs = { ...level.initialRegisters, A: initialA };
@@ -194,12 +195,12 @@ function BombGame({ level }) {
     setIsRunning(false);
   };
 
-  // Start running the program.
+  // Start automatic execution of the program.
   const runGame = () => {
     if (gameStatus === "waiting") {
       setGameStatus("running");
-      setIsRunning(true);
     }
+    setIsRunning(true);
   };
 
   return (
@@ -261,6 +262,13 @@ function BombGame({ level }) {
         >
           Run
         </button>
+        <button
+          onClick={manualStep}
+          style={{ marginLeft: "20px" }}
+          disabled={gameStatus === "won" || gameStatus === "lost"}
+        >
+          Step
+        </button>
       </div>
       <div style={{ marginTop: "20px", fontSize: "20px" }}>
         {gameStatus === "won" && (
@@ -298,14 +306,14 @@ function App() {
   const levels = [
     {
       id: "doubling",
-      name: "Bomb",
+      name: "Doubling Bomb (Hidden Conditions)",
       program: [
         // 0: If A is less than 10, jump to instruction 7 (EXPLODE)
         { op: "BLT", args: ["A", 10, 7] },
         // 1: If A is greater than 50, jump to instruction 7 (EXPLODE)
         { op: "BGT", args: ["A", 50, 7] },
         // 2: If T is greater than 100, jump to instruction 7 (EXPLODE)
-        { op: "BGT", args: ["T", 40, 7] },
+        { op: "BGT", args: ["T", 100, 7] },
         // 3: If B equals A, jump to instruction 6 (DEFUSE)
         { op: "BEQ", args: ["B", "A", 6] },
         // 4: Double B (B = B + B)
@@ -345,8 +353,7 @@ function App() {
             style={{
               padding: "5px",
               cursor: "pointer",
-              backgroundColor:
-                selectedLevel.id === lvl.id ? "#ddd" : "transparent",
+              backgroundColor: selectedLevel.id === lvl.id ? "#ddd" : "transparent",
             }}
             onClick={() => setSelectedLevel(lvl)}
           >

@@ -1,33 +1,114 @@
 import React, { useState, useEffect } from "react";
 
-// BombGame runs a level passed in via props.
+/* Helper: Convert the level’s program into a dictionary.
+   If the level defines the program as a list, we assign line numbers 1, 2, … */
+function convertProgram(prog) {
+  if (Array.isArray(prog)) {
+    let newProg = {};
+    prog.forEach((instr, index) => {
+      newProg[index + 1] = instr;
+    });
+    return newProg;
+  } else {
+    // If already a dict, make sure the keys are numbers.
+    let newProg = {};
+    Object.keys(prog).forEach((k) => {
+      newProg[Number(k)] = prog[k];
+    });
+    return newProg;
+  }
+}
+
+/* Given a program (dict mapping line numbers to instructions),
+   insert a new instruction at the given target line.
+   All lines with a line number >= target get shifted upward by 1.
+   Note: We no longer update any jump targets in the instructions.
+*/
+function insertLine(prog, target, newInstr) {
+  let newProg = {};
+  let keys = Object.keys(prog)
+    .map(Number)
+    .sort((a, b) => a - b);
+  keys.forEach((key) => {
+    if (key >= target) {
+      newProg[key + 1] = prog[key];
+    } else {
+      newProg[key] = prog[key];
+    }
+  });
+  newProg[target] = newInstr;
+  return newProg;
+}
+
+//
+// getDisplayedProgram constructs a “display dictionary” of the program.
+// It includes every defined line plus the immediate neighbors (and always the PC’s line and its neighbors).
+// It also inserts a “…” marker between any non-contiguous blocks.
+//
+function getDisplayedProgram(prog, pc) {
+  let keysSet = new Set();
+  Object.keys(prog).forEach((k) => {
+    let num = Number(k);
+    keysSet.add(num);
+    keysSet.add(num - 1);
+    keysSet.add(num + 1);
+  });
+  // Always include the PC and its neighbors.
+  keysSet.add(pc - 1);
+  keysSet.add(pc);
+  keysSet.add(pc + 1);
+  let keys = Array.from(keysSet);
+  keys.sort((a, b) => a - b);
+  let displayLines = [];
+  for (let i = 0; i < keys.length; i++) {
+    if (i > 0 && keys[i] - keys[i - 1] > 1) {
+      displayLines.push({ line: "...", instr: null });
+    }
+    let line = keys[i];
+    let instr = prog[line] || { op: "EMPTY", args: [] };
+    displayLines.push({ line, instr });
+  }
+  return displayLines;
+}
+
 function BombGame({ level }) {
   // The registers: A (player‐controlled), B, and T (time).
   const [registers, setRegisters] = useState(level.initialRegisters);
-  const [pc, setPC] = useState(0);
+  // The program counter is 1-indexed.
+  const [pc, setPC] = useState(1);
   // History stores snapshots of registers at each time step.
   const [history, setHistory] = useState({ 0: level.initialRegisters });
-  // gameStatus is one of: "waiting" (before Run is pressed), "running", "won", or "lost".
+  // gameStatus: "waiting", "running", "won", or "lost".
   const [gameStatus, setGameStatus] = useState("waiting");
-  // The value for register A as entered by the player (defaults to 0).
+  // The value for register A as entered by the player.
   const [playerValue, setPlayerValue] = useState(level.initialRegisters.A);
   // Controls whether the simulation is running automatically.
   const [isRunning, setIsRunning] = useState(false);
-  // Tooltip content and its screen position.
+  // Tooltip content and its position.
   const [tooltipContent, setTooltipContent] = useState(null);
   const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
+  // The program is stored as a dict mapping line numbers to instructions.
+  const [program, setProgram] = useState(convertProgram(level.program));
+
+  // Reset the level state using the provided value for register A.
+  const resetGame = (newA) => {
+    const initialA = parseInt(newA, 10);
+    const initRegs = { ...level.initialRegisters, A: initialA };
+    setProgram(convertProgram(level.program));
+    setRegisters(initRegs);
+    setPC(1);
+    setHistory({ 0: initRegs });
+    setGameStatus("waiting");
+    setIsRunning(false);
+  };
 
   // When the level prop changes, reset the game.
   useEffect(() => {
     setPlayerValue(level.initialRegisters.A);
-    setRegisters(level.initialRegisters);
-    setPC(0);
-    setHistory({ 0: level.initialRegisters });
-    setGameStatus("waiting");
-    setIsRunning(false);
+    resetGame(level.initialRegisters.A);
   }, [level]);
 
-  // Helper: Given an argument (register name or a number constant), return its numeric value.
+  // Helper: Given an argument (a register name or constant), return its numeric value.
   const getValue = (arg, regs) => {
     if (typeof arg === "number") return arg;
     if (regs.hasOwnProperty(arg)) return regs[arg];
@@ -43,28 +124,52 @@ function BombGame({ level }) {
     return arg;
   };
 
-  // A dictionary mapping opcodes to functions that generate tooltip strings.
-  const tooltipFuncs = {
-    ADD: (args) =>
-      `Set the value of ${formatArg(args[2])} to ${formatArg(
-        args[0]
-      )} + ${formatArg(args[1])}`,
-    JMP: (args) => `Jump to instruction ${args[0]}`,
-    BEQ: (args) =>
-      `If ${formatArg(args[0])} equals ${formatArg(args[1])}, jump to instruction ${args[2]}`,
-    BNE: (args) =>
-      `If ${formatArg(args[0])} does not equal ${formatArg(args[1])}, jump to instruction ${args[2]}`,
-    BGT: (args) =>
-      `If ${formatArg(args[0])} is greater than ${formatArg(args[1])}, jump to instruction ${args[2]}`,
-    BLT: (args) =>
-      `If ${formatArg(args[0])} is less than ${formatArg(args[1])}, jump to instruction ${args[2]}`,
-    TTRAVEL: () => `Set every register to its state at time T`,
-    DEFUSE: () => `Defuse the bomb and win the game!`,
-    EXPLODE: () => `Explode the bomb and lose the game!`,
+  // Format an instruction for display.
+  const formatInstruction = (instr) => {
+    switch (instr.op) {
+      case "ADD":
+        return `${instr.args[2]} ← ${instr.args[0]} + ${instr.args[1]}`;
+      case "CJUMP":
+        return `CJUMP ${instr.args[0]} ${instr.args[1]} ${instr.args[2]} → ${instr.args[3]}`;
+      case "JUMP":
+        return `JUMP ${instr.args[0]}`;
+      case "COPY":
+        // Two-argument form: "COPY A → B"
+        if (instr.args.length === 2) {
+          return `COPY ${instr.args[0]} → ${instr.args[1]}`;
+        }
+        return `COPY ${instr.args[0]}`;
+      case "EMPTY":
+        return `EMPTY`;
+      case "TTRAVEL":
+        return "TTRAVEL";
+      case "DEFUSE":
+        return "DEFUSE";
+      case "EXPLODE":
+        return "EXPLODE";
+      default:
+        return `${instr.op} ${instr.args.join(", ")}`;
+    }
   };
 
-  // Returns a tooltip string for a given instruction.
-  const getTooltip = (instr) => {
+  // Tooltip dictionary.
+  const tooltipFuncs = {
+    ADD: (args) =>
+      `${formatArg(args[2])} ← ${formatArg(args[0])} + ${formatArg(args[1])}`,
+    JUMP: (args) => `Jump to instruction ${args[0]}`,
+    CJUMP: (args) =>
+      `If ${formatArg(args[0])} ${args[1]} ${formatArg(args[2])}, jump to instruction ${args[3]}`,
+    COPY: (args) =>
+      args.length === 2
+        ? `Copy the instruction at line ${args[0]} into line ${args[1]}`
+        : `Copy the instruction at line ${args[0]} and insert it after the current line`,
+    EMPTY: () => `No operation (does nothing)`,
+    TTRAVEL: () => `Reset registers to their state at time T`,
+    DEFUSE: () => `Defuse the bomb and win the game!`,
+    EXPLODE: () => `Explode the bomb and lose the game!`
+  };
+
+  const getTooltipText = (instr) => {
     if (tooltipFuncs[instr.op]) {
       return tooltipFuncs[instr.op](instr.args);
     }
@@ -73,70 +178,84 @@ function BombGame({ level }) {
 
   // Execute one step of the program.
   const step = () => {
-    // If the program counter is out of bounds, treat it as a failure.
-    if (pc < 0 || pc >= level.program.length) {
-      setGameStatus("lost");
-      setIsRunning(false);
-      return;
-    }
-    const instr = level.program[pc];
+    // Get the current instruction from the program.
+    // If pc is not defined in the program, treat it as EMPTY.
+    const instr = program[pc] || { op: "EMPTY", args: [] };
     // Always increment T.
     const newT = registers.T + 1;
     let newRegisters = { ...registers, T: newT };
-    let newPC = pc + 1; // default: next instruction
+    // Default: advance PC by 1.
+    let newPC = pc + 1;
+    // Terminal instructions do not advance.
+    if (["DEFUSE", "EXPLODE"].includes(instr.op)) {
+      newPC = pc;
+    }
+    let newProgram = { ...program };
 
     switch (instr.op) {
       case "ADD": {
-        // ADD takes three arguments: source1, source2, destination.
         const val1 = getValue(instr.args[0], newRegisters);
         const val2 = getValue(instr.args[1], newRegisters);
         const dest = instr.args[2];
         newRegisters[dest] = val1 + val2;
         break;
       }
-      case "JMP":
-        newPC = instr.args[0];
+      case "JUMP":
+        newPC = getValue(instr.args[0], newRegisters);
         break;
-      case "BEQ": {
-        const reg = instr.args[0];
-        const cmpVal = getValue(instr.args[1], newRegisters);
-        const target = instr.args[2];
-        if (newRegisters[reg] === cmpVal) {
+      case "CJUMP": {
+        const leftValue = getValue(instr.args[0], newRegisters);
+        const operator = instr.args[1];
+        const rightValue = getValue(instr.args[2], newRegisters);
+        const target = getValue(instr.args[3], newRegisters);
+        let condition = false;
+        switch (operator) {
+          case "<":
+            condition = leftValue < rightValue;
+            break;
+          case ">":
+            condition = leftValue > rightValue;
+            break;
+          case "=":
+            condition = leftValue === rightValue;
+            break;
+          case "≠":
+            condition = leftValue !== rightValue;
+            break;
+          default:
+            break;
+        }
+        if (condition) {
           newPC = target;
         }
         break;
       }
-      case "BNE": {
-        const reg = instr.args[0];
-        const cmpVal = getValue(instr.args[1], newRegisters);
-        const target = instr.args[2];
-        if (newRegisters[reg] !== cmpVal) {
-          newPC = target;
+      case "COPY": {
+        if (instr.args.length === 2) {
+          // New form: COPY A → B.
+          const source = getValue(instr.args[0], newRegisters);
+          const target = getValue(instr.args[1], newRegisters);
+          const copyInstr = source in program ? program[source] : { op: "EMPTY", args: [] };
+          newProgram = insertLine(program, target, copyInstr);
+          // If the current PC is ≥ target, shift PC up by 1.
+          if (pc >= target) {
+            newPC = newPC + 1;
+          }
+        } else {
+          // Old form: single argument. Insert a copy immediately after the current line.
+          const source = getValue(instr.args[0], newRegisters);
+          const target = pc + 1;
+          const copyInstr = source in program ? program[source] : { op: "EMPTY", args: [] };
+          newProgram = insertLine(program, target, copyInstr);
+          // No adjustment to PC needed.
         }
+        setProgram(newProgram);
         break;
       }
-      case "BGT": {
-        // Branch if Greater Than.
-        const reg = instr.args[0];
-        const cmpVal = getValue(instr.args[1], newRegisters);
-        const target = instr.args[2];
-        if (newRegisters[reg] > cmpVal) {
-          newPC = target;
-        }
+      case "EMPTY":
+        // Do nothing.
         break;
-      }
-      case "BLT": {
-        // Branch if Less Than.
-        const reg = instr.args[0];
-        const cmpVal = getValue(instr.args[1], newRegisters);
-        const target = instr.args[2];
-        if (newRegisters[reg] < cmpVal) {
-          newPC = target;
-        }
-        break;
-      }
       case "TTRAVEL": {
-        // Reset registers to their state at time T.
         const travelTime = newRegisters.T;
         if (history[travelTime]) {
           newRegisters = { ...history[travelTime] };
@@ -152,64 +271,43 @@ function BombGame({ level }) {
         setIsRunning(false);
         break;
       default:
+        // Unknown opcodes are treated as EMPTY.
         break;
     }
 
-    // Record the new register state in the history.
     setHistory((prevHistory) => ({
       ...prevHistory,
-      [newRegisters.T]: newRegisters,
+      [newRegisters.T]: newRegisters
     }));
-
     setRegisters(newRegisters);
     setPC(newPC);
   };
 
-  // Automatic stepping (only if isRunning is true and game is still running).
+  // Automatic stepping.
   useEffect(() => {
     if (!isRunning || gameStatus !== "running") return;
     const timer = setTimeout(() => {
       step();
-    }, 500); // execute one instruction every 500ms
+    }, 500);
     return () => clearTimeout(timer);
-  }, [isRunning, gameStatus, registers, pc]);
+  }, [isRunning, gameStatus, registers, pc, program]);
 
-  // Manual stepping: stops any automatic execution and executes one step.
+  // Manual stepping.
   const manualStep = () => {
     setIsRunning(false);
-    if (gameStatus === "waiting") {
-      setGameStatus("running");
-    }
+    if (gameStatus === "waiting") setGameStatus("running");
     step();
   };
 
-  // Reset the level state using the player's specified value for register A.
-  // (All win/lose conditions are now enforced in the assembly code.)
-  const resetGame = () => {
-    const initialA = parseInt(playerValue, 10);
-    const initRegs = { ...level.initialRegisters, A: initialA };
-    setRegisters(initRegs);
-    setPC(0);
-    setHistory({ 0: initRegs });
-    setGameStatus("waiting");
-    setIsRunning(false);
-  };
-
-  // Start automatic execution of the program.
-  const runGame = () => {
-    if (gameStatus === "waiting") {
-      setGameStatus("running");
-    }
-    setIsRunning(true);
-  };
+  // Compute the displayable program.
+  const displayLines = getDisplayedProgram(program, pc);
 
   return (
     <div>
       <h2>{level.name}</h2>
-      {/* The level description is now vague—its win/lose conditions are hidden in the code. */}
       <p>{level.description}</p>
       <div style={{ display: "flex", marginBottom: "20px" }}>
-        {/* Registers Display */}
+        {/* Registers */}
         <div style={{ marginRight: "40px" }}>
           <h3>Registers</h3>
           {Object.entries(registers).map(([reg, val]) => (
@@ -218,26 +316,42 @@ function BombGame({ level }) {
             </div>
           ))}
         </div>
-        {/* Program Display */}
-        <div>
+        {/* Program Display (scrollable) */}
+        <div
+          style={{
+            flexGrow: 1,
+            maxHeight: "400px",
+            overflowY: "auto",
+            border: "1px solid #ccc",
+            padding: "5px",
+            fontFamily: "monospace"
+          }}
+        >
           <h3>Program</h3>
-          {level.program.map((instr, index) => (
-            <div
-              key={index}
-              style={{
-                padding: "5px",
-                backgroundColor: index === pc ? "lightgreen" : "transparent",
-                cursor: "pointer",
-              }}
-              onMouseOver={() => setTooltipContent(getTooltip(instr))}
-              onMouseMove={(e) =>
-                setTooltipPosition({ x: e.clientX, y: e.clientY })
-              }
-              onMouseOut={() => setTooltipContent(null)}
-            >
-              {index}: {instr.op} {instr.args.join(", ")}
-            </div>
-          ))}
+          {displayLines.map((entry, index) =>
+            entry.line === "..." ? (
+              <div key={`gap-${index}`} style={{ textAlign: "center" }}>
+                ...
+              </div>
+            ) : (
+              <div
+                key={entry.line}
+                style={{
+                  padding: "2px 5px",
+                  backgroundColor:
+                    entry.line === pc ? "lightgreen" : "transparent",
+                  cursor: "pointer"
+                }}
+                onMouseOver={() => setTooltipContent(getTooltipText(entry.instr))}
+                onMouseMove={(e) =>
+                  setTooltipPosition({ x: e.clientX, y: e.clientY })
+                }
+                onMouseOut={() => setTooltipContent(null)}
+              >
+                {entry.line}: {formatInstruction(entry.instr)}
+              </div>
+            )
+          )}
         </div>
       </div>
       {/* Controls */}
@@ -248,15 +362,22 @@ function BombGame({ level }) {
           <input
             type="number"
             value={playerValue}
-            onChange={(e) => setPlayerValue(e.target.value)}
+            onChange={(e) => {
+              const newVal = e.target.value;
+              setPlayerValue(newVal);
+              resetGame(newVal);
+            }}
             style={{ marginLeft: "10px" }}
           />
         </label>
-        <button onClick={resetGame} style={{ marginLeft: "20px" }}>
+        <button onClick={() => resetGame(playerValue)} style={{ marginLeft: "20px" }}>
           Reset Level
         </button>
         <button
-          onClick={runGame}
+          onClick={() => {
+            if (gameStatus === "waiting") setGameStatus("running");
+            setIsRunning(true);
+          }}
           style={{ marginLeft: "20px" }}
           disabled={gameStatus !== "waiting"}
         >
@@ -278,7 +399,7 @@ function BombGame({ level }) {
           <div style={{ color: "red" }}>Boom! The bomb exploded!</div>
         )}
       </div>
-      {/* Tooltip (appears near the mouse pointer when hovering over an instruction) */}
+      {/* Tooltip */}
       {tooltipContent && (
         <div
           style={{
@@ -290,7 +411,7 @@ function BombGame({ level }) {
             padding: "5px",
             borderRadius: "3px",
             pointerEvents: "none",
-            zIndex: 1000,
+            zIndex: 1000
           }}
         >
           {tooltipContent}
@@ -300,37 +421,68 @@ function BombGame({ level }) {
   );
 }
 
-// The App component contains a level selector on the left and the BombGame on the right.
 function App() {
-  // Define our levels. (For now, we only have one level.)
+  // Define levels.
   const levels = [
     {
-      id: "doubling",
-      name: "Doubling Bomb (Hidden Conditions)",
+      id: "tutorial",
+      name: "Level 1",
       program: [
-        // 0: If A is less than 10, jump to instruction 7 (EXPLODE)
-        { op: "BLT", args: ["A", 10, 7] },
-        // 1: If A is greater than 50, jump to instruction 7 (EXPLODE)
-        { op: "BGT", args: ["A", 50, 7] },
-        // 2: If T is greater than 100, jump to instruction 7 (EXPLODE)
-        { op: "BGT", args: ["T", 100, 7] },
-        // 3: If B equals A, jump to instruction 6 (DEFUSE)
-        { op: "BEQ", args: ["B", "A", 6] },
-        // 4: Double B (B = B + B)
-        { op: "ADD", args: ["B", "B", "B"] },
-        // 5: Jump back to instruction 2 (to re‑check T and then test B vs. A)
-        { op: "JMP", args: [2] },
-        // 6: Defuse the bomb.
-        { op: "DEFUSE", args: [] },
-        // 7: Explode the bomb.
+        { op: "CJUMP", args: ["A", "=", 5, 3] },
         { op: "EXPLODE", args: [] },
+        { op: "DEFUSE", args: [] }
       ],
-      // Initial registers (A is set by the player; B starts at 1; T starts at 0).
-      initialRegisters: { A: 0, B: 1, T: 0 },
-      // The level description does not reveal the win/lose conditions.
-      description:
-        "The bomb's conditions are hidden within the assembly code. Figure out the correct input for register A to defuse the bomb.",
+      initialRegisters: { A: 0, T: 0 },
+      description: "Figure out the correct input for register A to defuse the bomb."
     },
+    {
+      id: "doubling",
+      name: "Level 2",
+      program: [
+        { op: "CJUMP", args: ["A", "<", 10, 8] },
+        { op: "CJUMP", args: ["A", ">", 50, 8] },
+        { op: "CJUMP", args: ["T", ">", 40, 8] },
+        { op: "CJUMP", args: ["B", "=", "A", 7] },
+        { op: "ADD", args: ["B", "B", "B"] },
+        { op: "JUMP", args: [3] },
+        { op: "DEFUSE", args: [] },
+        { op: "EXPLODE", args: [] }
+      ],
+      initialRegisters: { A: 0, B: 1, T: 0 },
+      description: "Can you defuse a more complex bomb?"
+    },
+    {
+      id: "copying",
+      name: "Level 3",
+      program: [
+        { op: "JUMP", args: [5] },
+        { op: "EXPLODE", args: [] },
+        { op: "DEFUSE", args: [] },
+        { op: "EXPLODE", args: [] },
+        { op: "ADD", args: ["A", "B", "B"] },
+        { op: "COPY", args: ["B"] },
+        { op: "CJUMP", args: ["T", ">", "15", 4] },
+        { op: "JUMP", args: [5] }
+      ],
+      initialRegisters: { A: 0, B: 1, T: 0 },
+      description: "What if the program could modify itself?"
+    },
+    {
+      id: "more_copying",
+      name: "Level 4",
+      program: [
+        { op: "JUMP", args: [5] },
+        { op: "EXPLODE", args: [] },
+        { op: "DEFUSE", args: [] },
+        { op: "EXPLODE", args: [] },
+        { op: "ADD", args: ["A", "B", "B"] },
+        { op: "COPY", args: ["A", "B"] },
+        { op: "CJUMP", args: ["T", ">", "15", 4] },
+        { op: "JUMP", args: [5] }
+      ],
+      initialRegisters: { A: 0, B: 2, T: 0 },
+      description: "Add new lines anywhere in the program!"
+    }
   ];
 
   const [selectedLevel, setSelectedLevel] = useState(levels[0]);
@@ -343,7 +495,7 @@ function App() {
           width: "200px",
           borderRight: "1px solid #ccc",
           padding: "10px",
-          boxSizing: "border-box",
+          boxSizing: "border-box"
         }}
       >
         <h3>Levels</h3>
@@ -353,7 +505,7 @@ function App() {
             style={{
               padding: "5px",
               cursor: "pointer",
-              backgroundColor: selectedLevel.id === lvl.id ? "#ddd" : "transparent",
+              backgroundColor: selectedLevel.id === lvl.id ? "#ddd" : "transparent"
             }}
             onClick={() => setSelectedLevel(lvl)}
           >

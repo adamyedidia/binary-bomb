@@ -90,6 +90,16 @@ function BombGame({ level }) {
   // The program is stored as a dict mapping line numbers to instructions.
   const [program, setProgram] = useState(convertProgram(level.program));
 
+  // NEW: For Level 5 only, the needle item is available initially.
+  const [needleAvailable, setNeedleAvailable] = useState(level.id === "jumping");
+
+  // When the level prop changes, reset the game and, if applicable, reinitialize the needle.
+  useEffect(() => {
+    setPlayerValue(level.initialRegisters.A);
+    resetGame(level.initialRegisters.A);
+    setNeedleAvailable(level.id === "jumping");
+  }, [level]);
+
   // Reset the level state using the provided value for register A.
   const resetGame = (newA) => {
     const initialA = parseInt(newA, 10);
@@ -101,12 +111,6 @@ function BombGame({ level }) {
     setGameStatus("waiting");
     setIsRunning(false);
   };
-
-  // When the level prop changes, reset the game.
-  useEffect(() => {
-    setPlayerValue(level.initialRegisters.A);
-    resetGame(level.initialRegisters.A);
-  }, [level]);
 
   // Helper: Given an argument (a register name or constant), return its numeric value.
   const getValue = (arg, regs) => {
@@ -174,6 +178,19 @@ function BombGame({ level }) {
       return tooltipFuncs[instr.op](instr.args);
     }
     return "";
+  };
+
+  // NEW: Function to use the needle. It asks the user for a register name,
+  // and if valid, increases that register's value by 1 and consumes the needle.
+  const useNeedle = () => {
+    const reg = prompt("Enter the register name to increment (e.g. A, B, etc.):");
+    if (reg && registers.hasOwnProperty(reg)) {
+      const newValue = registers[reg] + 1;
+      setRegisters({ ...registers, [reg]: newValue });
+      setNeedleAvailable(false);
+    } else {
+      alert("Invalid register name!");
+    }
   };
 
   // Execute one step of the program.
@@ -247,7 +264,6 @@ function BombGame({ level }) {
           const target = pc + 1;
           const copyInstr = source in program ? program[source] : { op: "EMPTY", args: [] };
           newProgram = insertLine(program, target, copyInstr);
-          // No adjustment to PC needed.
         }
         setProgram(newProgram);
         break;
@@ -307,7 +323,7 @@ function BombGame({ level }) {
       <h2>{level.name}</h2>
       <p>{level.description}</p>
       <div style={{ display: "flex", marginBottom: "20px" }}>
-        {/* Registers */}
+        {/* Registers Display */}
         <div style={{ marginRight: "40px" }}>
           <h3>Registers</h3>
           {Object.entries(registers).map(([reg, val]) => (
@@ -390,6 +406,12 @@ function BombGame({ level }) {
         >
           Step
         </button>
+        {/* NEW: If this is Level 5 ("jumping") and the needle is available, show a button to use it */}
+        {level.id === "jumping" && needleAvailable && (
+          <button onClick={useNeedle} style={{ marginLeft: "20px" }}>
+            Use Needle
+          </button>
+        )}
       </div>
       <div style={{ marginTop: "20px", fontSize: "20px" }}>
         {gameStatus === "won" && (
@@ -482,6 +504,24 @@ function App() {
       ],
       initialRegisters: { A: 0, B: 2, T: 0 },
       description: "Add new lines anywhere in the program!"
+    },
+    {
+      id: "jumping",
+      name: "Level 5",
+      program: [
+        { op: "CJUMP", args: ["A", ">", "10", 3] },        
+        { op: "JUMP", args: [6] },
+        { op: "EXPLODE", args: [] },
+        { op: "DEFUSE", args: [] },
+        { op: "EXPLODE", args: [] },
+        { op: "COPY", args: [7] },
+        { op: "ADD", args: ["A", "B", "B"] },
+        { op: "CJUMP", args: ["B", "=", "13", 4] },
+        { op: "CJUMP", args: ["T", ">", "30", 5] },        
+        { op: "JUMP", args: [6] }
+      ],
+      initialRegisters: { A: 0, B: 1, T: 0 },
+      description: "You have a needle to increase any register by 1 once!"
     }
   ];
 
